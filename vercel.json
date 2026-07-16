@@ -3,5 +3,6 @@
     "api/lookup.js": {
       "maxDuration": 30
     }
-  }
+  },
+  "outputDirectory": "public"
 }

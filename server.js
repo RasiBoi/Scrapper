@@ -8,7 +8,7 @@ const app = express();
 const PORT = 4000;
 
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Mount the Vercel serverless function as a local Express route
 // This means the frontend's /api/lookup calls work identically locally and on Vercel
