@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PEPPOL AP Certificate Scraper</title>
-    <meta name="description" content="Batch-lookup PEPPOL Access Point certificate owners from any CSV with NZBN numbers." />
+    <meta name="description" content="Batch-lookup PEPPOL Access Point certificate owners from any CSV with NZBN, ABN, or UEN numbers." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -534,7 +534,7 @@
       <header>
         <div class="logo-chip"><span class="live-dot"></span>PEPPOL Lookup Tool</div>
         <h1>AP Certificate Scraper</h1>
-        <p class="subtitle">Upload any CSV, map your NZBN column, and we'll fill in the Access Point owner from the PEPPOL network.</p>
+        <p class="subtitle">Upload any CSV, map your NZBN / ABN / UEN column, and we'll fill in the Access Point owner from the PEPPOL network.</p>
       </header>
 
       <!-- ======= STEP INDICATOR ======= -->
@@ -594,7 +594,7 @@
           <div class="section-label">🗺️ Map Your CSV Columns</div>
 
           <p style="color:var(--text-2);font-size:14px;margin-bottom:20px;">
-            We found the following columns in your CSV. Tell us which one contains the <strong style="color:var(--text-1)">NZBN</strong> number.
+            We found the following columns in your CSV. Tell us which one contains the <strong style="color:var(--text-1)">NZBN / ABN / UEN</strong> number. The tool auto-detects the ID type per row.
           </p>
 
           <!-- Column chips -->
@@ -603,8 +603,8 @@
           <!-- Mapping fields -->
           <div class="map-grid">
             <div class="field-group">
-              <label for="nzbn-select">NZBN Column <span class="required">*</span></label>
-              <select id="nzbn-select" aria-label="Select NZBN column"></select>
+              <label for="nzbn-select">Business ID Column <span class="required">*</span></label>
+              <select id="nzbn-select" aria-label="Select NZBN / ABN / UEN column"></select>
               <p class="field-hint" id="nzbn-hint"></p>
             </div>
             <div class="field-group">
@@ -700,6 +700,7 @@
     let allColumns   = [];
     let resultRows   = [];
     let selectedNzbnCol  = null;
+    let selectedCountryCol = null;
     let outputColName    = 'Access Point';
 
     let isScraping = false;
@@ -824,8 +825,15 @@
 
     /* ---- COLUMN MAPPING ---- */
     function buildColumnMapping() {
-      // auto-detect NZBN column
-      const autoNZBN = allColumns.find(h => /^(nzbn|nz[\s_-]?bn|nz business number)$/i.test(h.trim())) || null;
+      // auto-detect NZBN / ABN / UEN column (supports combined headers like "NZBN/ABN/UEN")
+      const autoNZBN = allColumns.find(h =>
+        /nzbn|abn|uen|business\s*(id|number|no)/i.test(h.trim())
+      ) || null;
+
+      // optional country column for better scheme detection
+      selectedCountryCol = allColumns.find(h =>
+        /^country$/i.test(h.trim())
+      ) || null;
 
       // chips
       colChips.innerHTML = allColumns.map(h => {
@@ -839,10 +847,10 @@
 
       if (autoNZBN) {
         nzbnSelect.value = autoNZBN;
-        nzbnHint.textContent = '✓ Auto-detected from column name';
+        nzbnHint.textContent = '✓ Auto-detected — supports NZBN, ABN & UEN in the same column';
         nzbnHint.className = 'field-hint auto';
       } else {
-        nzbnHint.textContent = 'No column named "NZBN" found — please select manually';
+        nzbnHint.textContent = 'No NZBN/ABN/UEN column found — please select manually';
         nzbnHint.className = 'field-hint';
       }
 
@@ -875,7 +883,7 @@
 
     s2Next.addEventListener('click', () => {
       if (!selectedNzbnCol) {
-        nzbnHint.textContent = '⚠️ Please select the NZBN column to continue.';
+        nzbnHint.textContent = '⚠️ Please select the NZBN / ABN / UEN column to continue.';
         nzbnHint.className = 'field-hint';
         nzbnSelect.focus();
         return;
@@ -942,39 +950,52 @@
         if (!isScraping) break;
 
         const row  = { ...parsedRows[i] };
-        const nzbn = (row[selectedNzbnCol] || '').toString().trim();
-        const label = row['First Name']
-          ? `${row['First Name']} ${row['Last Name']}`.trim()
-          : `Row ${i+1}`;
+        const bizId = (row[selectedNzbnCol] || '').toString().trim();
+        const country = selectedCountryCol
+          ? (row[selectedCountryCol] || '').toString().trim()
+          : '';
+        const label = row['CONTACT NAME']
+          || (row['First Name'] ? `${row['First Name']} ${row['Last Name'] || ''}`.trim() : '')
+          || row['COMPANY NAME']
+          || `Row ${i+1}`;
 
-        if (!nzbn) {
-          row[outputColName] = 'No NZBN';
+        // Skip empty / placeholder values
+        if (!bizId || /^(unverified|n\/?a|none|null|-)$/i.test(bizId)) {
+          row[outputColName] = 'No ID';
           resultRows[i] = row;
           sNF++; updateStats();
-          addLog(`⚪ ${label} — skipped (empty NZBN)`, 'warn');
+          addLog(`⚪ ${label} — skipped (empty / unverified ID)`, 'warn');
         } else {
           try {
-            const resp = await fetch(`/api/lookup?nzbn=${encodeURIComponent(nzbn)}`);
+            const params = new URLSearchParams({ id: bizId });
+            if (country) params.set('country', country);
+            const resp = await fetch(`/api/lookup?${params}`);
             const data = await resp.json();
 
             if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
 
+            const typeTag = data.type ? ` [${data.type}]` : '';
             if (data.owner) {
               row[outputColName] = data.owner;
               resultRows[i] = row;
               sFound++; updateStats();
-              addLog(`✅ ${label} (${nzbn}) → ${data.owner}`, 'success');
+              addLog(`✅ ${label} (${bizId})${typeTag} → ${data.owner}`, 'success');
+            } else if (data.skipped) {
+              row[outputColName] = 'Unsupported ID';
+              resultRows[i] = row;
+              sNF++; updateStats();
+              addLog(`⚪ ${label} (${bizId}) — skipped (not NZBN/ABN/UEN)`, 'warn');
             } else {
               row[outputColName] = 'Not found';
               resultRows[i] = row;
               sNF++; updateStats();
-              addLog(`⚠️  ${label} (${nzbn}) → Not found in PEPPOL`, 'warn');
+              addLog(`⚠️  ${label} (${bizId})${typeTag} → Not found in PEPPOL`, 'warn');
             }
           } catch (err) {
             row[outputColName] = 'Error';
             resultRows[i] = row;
             sErr++; updateStats();
-            addLog(`❌ ${label} (${nzbn}) → ${err.message}`, 'error');
+            addLog(`❌ ${label} (${bizId}) → ${err.message}`, 'error');
           }
         }
 
@@ -1005,7 +1026,7 @@
         if (!ap || ap === '')       apCell = `<span class="badge badge-pend">⏳ Pending</span>`;
         else if (ap === 'Not found') apCell = `<span class="badge badge-warn">⚠️ Not found</span>`;
         else if (ap === 'Error')     apCell = `<span class="badge badge-err">❌ Error</span>`;
-        else if (ap === 'No NZBN')   apCell = `<span class="badge badge-warn">⚪ No NZBN</span>`;
+        else if (ap === 'No ID' || ap === 'No NZBN') apCell = `<span class="badge badge-warn">⚪ No ID</span>`;
         else                         apCell = `<span class="badge badge-ok">✅ ${esc(ap)}</span>`;
 
         html += '<tr>' + cols.map(c => {
